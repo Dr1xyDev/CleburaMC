@@ -3,7 +3,7 @@ name: Build PocketMine PHAR
 on:
   workflow_dispatch:
   push:
-    branches: [ main, master ]
+    branches: [main, master]
   pull_request:
 
 jobs:
@@ -17,79 +17,102 @@ jobs:
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
         with:
-          php-version: '8.2'
+          php-version: "8.2"
 
-      - name: Download pp.zip from MediaFire
+      - name: Download pp.zip
         run: |
           echo "Descargando pp.zip..."
-          curl -L -o pp.zip "https://www.mediafire.com/file/hrn7qurvg5htlnx/pp.zip/file" --silent -f || \
-          wget --content-disposition -O pp.zip "https://www.mediafire.com/file/hrn7qurvg5htlnx/pp.zip/file"
+
+          curl -L --fail \
+            -H "User-Agent: Mozilla/5.0" \
+            -o pp.zip \
+            "https://download1980.mediafire.com/1mwlyn200r1gBjAdIs0GLsNeTaNhyJ2DUOFpJcnjdYMyRBr9zc-tusYKA584HWApUTABOS5nK9U6gGGcspid1XlvX5j21o60icpvo9vfMm388yWo5xrFACU6fU7KTaamWB6Wic3qsK1RJ4ZShRgQdgcsZjB_jypxk6unzTQiA7WP7cV8/hrn7qurvg5htlnx/pp.zip"
+
+          echo "Información del archivo:"
+          file pp.zip
           ls -lh pp.zip
+
+          unzip -t pp.zip
 
       - name: Build PHAR
         run: |
-          cat > build-phar.php << 'EOL'
+          cat > build-phar.php <<'PHP'
           <?php
-          $zipFile = 'pp.zip';
-          $pharFile = 'Submarine.phar';
-          
-          echo "Iniciando construcción del PHAR...\n";
-          
+
+          ini_set("phar.readonly", "0");
+
+          $zipFile = "pp.zip";
+          $pharFile = "Submarine.phar";
+
           if (!file_exists($zipFile)) {
-              die("Error: No se encontró pp.zip\n");
+              die("No existe pp.zip\n");
           }
-          
+
+          if (file_exists($pharFile)) {
+              unlink($pharFile);
+          }
+
+          $zip = new ZipArchive();
+          $result = $zip->open($zipFile);
+
+          if ($result !== true) {
+              echo shell_exec("file pp.zip");
+              die("ZipArchive->open() devolvió: $result\n");
+          }
+
+          echo "Archivos: {$zip->numFiles}\n";
+
           $phar = new Phar($pharFile);
           $phar->startBuffering();
-          
+
           $stub = <<<'STUB'
           <?php
+          Phar::mapPhar();
           define("pocketmine\\PATH", "phar://" . __FILE__ . "/");
-          require_once("phar://" . __FILE__ . "/src/pocketmine/PocketMine.php");
-          __HALT_COMPILER(); ?>
+          require "phar://" . __FILE__ . "/src/pocketmine/PocketMine.php";
+          __HALT_COMPILER();
           STUB;
-          
+
           $phar->setStub($stub);
-          
-          $zip = new ZipArchive;
-          if ($zip->open($zipFile) !== TRUE) {
-              die("No se pudo abrir pp.zip\n");
-          }
-          
-          $total = $zip->numFiles;
-          echo "Archivos encontrados: $total\n";
-          
-          for ($i = 0; $i < $total; $i++) {
+
+          for ($i = 0; $i < $zip->numFiles; $i++) {
               $name = $zip->getNameIndex($i);
-              if (substr($name, -1) !== '/' && strpos($name, 'build-') === false) {
-                  $phar->addFromString($name, $zip->getFromIndex($i));
+
+              if (str_ends_with($name, "/")) {
+                  continue;
               }
-              if ($i % 800 === 0) {
-                  echo "\rProcesando: " . round(($i / $total) * 100, 1) . "%";
+
+              $contents = $zip->getFromIndex($i);
+
+              if ($contents !== false) {
+                  $phar->addFromString($name, $contents);
+              }
+
+              if ($i % 500 == 0) {
+                  echo "Procesados $i / {$zip->numFiles}\n";
               }
           }
-          
+
           $zip->close();
-          $phar->stopBuffering();
-          
-          echo "\nAplicando compresión GZ...\n";
+
           $phar->compressFiles(Phar::GZ);
-          
-          echo "\n¡PHAR creado exitosamente!\n";
-          echo "Nombre: $pharFile\n";
-          echo "Tamaño: " . round(filesize($pharFile) / (1024*1024), 2) . " MB\n";
-          ?>
-          EOL
-          
-          # Ejecutar con phar.readonly desactivado
+          $phar->stopBuffering();
+
+          clearstatcache();
+
+          echo "PHAR creado correctamente.\n";
+          echo filesize($pharFile) . " bytes\n";
+          PHP
+
           php -d phar.readonly=0 build-phar.php
 
-      - name: Upload PHAR artifact
+      - name: Verify PHAR
+        run: |
+          file Submarine.phar
+          ls -lh Submarine.phar
+
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Submarine-PHAR
           path: Submarine.phar
-          retention-days: 30
-
-      - name: Show file info
-        run: ls -lh *.phar
