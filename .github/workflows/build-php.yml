@@ -1,76 +1,110 @@
-name: Build PHP 8.2 for PocketMine-MP 5
+name: Build PocketMine PHAR
 
 on:
+  workflow_dispatch:  # Manual trigger
   push:
-    branches:
-      - "**"
-    tags-ignore:
-      - "php-**"
+    branches: [ main, master ]
   pull_request:
-  workflow_dispatch:
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
 
 jobs:
-  linux:
-    name: Linux x86_64 (PM 5)
+  build:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            make autoconf automake libtool libtool-bin m4 wget \
-            libc-bin gzip bzip2 bison g++ git re2c pkg-config cmake
-
-      - name: Setup cache for downloads
-        id: cache
-        uses: actions/cache@v4
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
         with:
-          path: download_cache
-          key: php-compile-cache-${{ hashFiles('compile.sh') }}
-          restore-keys: php-compile-cache-
+          php-version: '8.1'
+          tools: composer
 
-      - name: Make script executable
-        run: chmod +x compile.sh
-
-      - name: Compile PHP 8.2.13
+      - name: Download pp.zip from MediaFire
         run: |
-          set -ex
-          ./compile.sh -j 4 -P 5 -c ./download_cache -D
-        shell: bash
+          echo "Descargando pp.zip desde MediaFire..."
+          wget -O pp.zip "https://www.mediafire.com/file/hrn7qurvg5htlnx/pp.zip/file" --quiet || \
+          curl -L -o pp.zip "https://www.mediafire.com/file/hrn7qurvg5htlnx/pp.zip/file" --silent
+          
+          # MediaFire sometimes redirects, try to get direct link if needed
+          if [ ! -s pp.zip ] || [ $(stat -c %s pp.zip) -lt 100000 ]; then
+            echo "Intentando obtener enlace directo de MediaFire..."
+            # This is a common workaround, but MediaFire changes often
+            wget --content-disposition "https://www.mediafire.com/file/hrn7qurvg5htlnx/pp.zip/file" -O pp.zip
+          fi
+          
+          ls -lh pp.zip
+          echo "Tamaño del ZIP: $(du -h pp.zip | cut -f1)"
 
-      - name: Create tarballs
+      - name: Create build script
         run: |
-          tar -czf PHP-Linux-x86_64-PM5.tar.gz bin/
-          tar -czf PHP-Linux-x86_64-PM5-debugging-symbols.tar.gz bin-debug/
-        shell: bash
+          cat > build-phar.php << 'EOL'
+          <?php
+          $zipFile = 'pp.zip';
+          $pharFile = 'Submarine.phar';
+          
+          echo "Iniciando construcción del PHAR...\n";
+          
+          if (!file_exists($zipFile)) {
+              die("Error: No se encontró pp.zip\n");
+          }
+          
+          $phar = new Phar($pharFile);
+          $phar->startBuffering();
+          
+          // Stub proporcionado
+          $stub = <<<'STUB'
+          <?php
+          define("pocketmine\\PATH", "phar://" . __FILE__ . "/");
+          require_once("phar://" . __FILE__ . "/src/pocketmine/PocketMine.php");
+          __HALT_COMPILER(); ?>
+          STUB;
+          
+          $phar->setStub($stub);
+          
+          $zip = new ZipArchive;
+          if ($zip->open($zipFile) !== TRUE) {
+              die("No se pudo abrir pp.zip\n");
+          }
+          
+          $total = $zip->numFiles;
+          echo "Archivos encontrados: $total\n";
+          
+          for ($i = 0; $i < $total; $i++) {
+              $name = $zip->getNameIndex($i);
+              if (substr($name, -1) !== '/' && strpos($name, 'build-') === false) {
+                  $phar->addFromString($name, $zip->getFromIndex($i));
+              }
+              if ($i % 1000 === 0) {
+                  echo "\rProcesando: " . round(($i / $total) * 100) . "%";
+              }
+          }
+          
+          $zip->close();
+          $phar->stopBuffering();
+          
+          // Compresión GZ
+          echo "\nAplicando compresión GZ...\n";
+          $phar->compressFiles(Phar::GZ);
+          
+          echo "¡PHAR creado exitosamente!\n";
+          echo "Nombre: $pharFile\n";
+          echo "Tamaño: " . round(filesize($pharFile) / (1024*1024), 2) . " MB\n";
+          ?>
+          EOL
 
-      - name: Upload build artifacts
+      - name: Build PHAR
+        run: php build-phar.php
+
+      - name: Upload PHAR as artifact
         uses: actions/upload-artifact@v4
-        if: always()
         with:
-          name: Linux-PM5
-          path: |
-            PHP-Linux-x86_64-PM5.tar.gz
-            PHP-Linux-x86_64-PM5-debugging-symbols.tar.gz
-            install.log
-          retention-days: 90
-
-      - name: Backup workspace on failure
-        if: failure()
-        run: tar -czf workspace.tar.gz install_data 2>/dev/null || true
-
-      - name: Upload workspace backup
-        uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: Linux-workspace-PM5
-          path: workspace.tar.gz
+          name: Submarine-PH AR
+          path: Submarine.phar
+          if-no-files-found: error
           retention-days: 30
+
+      - name: Show info
+        run: |
+          ls -lh *.phar
+          echo "Workflow completado."
