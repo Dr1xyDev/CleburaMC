@@ -1,7 +1,7 @@
 name: Build PocketMine PHAR
 
 on:
-  workflow_dispatch:  # Manual trigger
+  workflow_dispatch:
   push:
     branches: [ main, master ]
   pull_request:
@@ -17,26 +17,16 @@ jobs:
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
         with:
-          php-version: '8.1'
-          tools: composer
+          php-version: '8.2'
 
       - name: Download pp.zip from MediaFire
         run: |
-          echo "Descargando pp.zip desde MediaFire..."
-          wget -O pp.zip "https://www.mediafire.com/file/hrn7qurvg5htlnx/pp.zip/file" --quiet || \
-          curl -L -o pp.zip "https://www.mediafire.com/file/hrn7qurvg5htlnx/pp.zip/file" --silent
-          
-          # MediaFire sometimes redirects, try to get direct link if needed
-          if [ ! -s pp.zip ] || [ $(stat -c %s pp.zip) -lt 100000 ]; then
-            echo "Intentando obtener enlace directo de MediaFire..."
-            # This is a common workaround, but MediaFire changes often
-            wget --content-disposition "https://www.mediafire.com/file/hrn7qurvg5htlnx/pp.zip/file" -O pp.zip
-          fi
-          
+          echo "Descargando pp.zip..."
+          curl -L -o pp.zip "https://www.mediafire.com/file/hrn7qurvg5htlnx/pp.zip/file" --silent -f || \
+          wget --content-disposition -O pp.zip "https://www.mediafire.com/file/hrn7qurvg5htlnx/pp.zip/file"
           ls -lh pp.zip
-          echo "Tamaño del ZIP: $(du -h pp.zip | cut -f1)"
 
-      - name: Create build script
+      - name: Build PHAR
         run: |
           cat > build-phar.php << 'EOL'
           <?php
@@ -52,7 +42,6 @@ jobs:
           $phar = new Phar($pharFile);
           $phar->startBuffering();
           
-          // Stub proporcionado
           $stub = <<<'STUB'
           <?php
           define("pocketmine\\PATH", "phar://" . __FILE__ . "/");
@@ -75,36 +64,32 @@ jobs:
               if (substr($name, -1) !== '/' && strpos($name, 'build-') === false) {
                   $phar->addFromString($name, $zip->getFromIndex($i));
               }
-              if ($i % 1000 === 0) {
-                  echo "\rProcesando: " . round(($i / $total) * 100) . "%";
+              if ($i % 800 === 0) {
+                  echo "\rProcesando: " . round(($i / $total) * 100, 1) . "%";
               }
           }
           
           $zip->close();
           $phar->stopBuffering();
           
-          // Compresión GZ
           echo "\nAplicando compresión GZ...\n";
           $phar->compressFiles(Phar::GZ);
           
-          echo "¡PHAR creado exitosamente!\n";
+          echo "\n¡PHAR creado exitosamente!\n";
           echo "Nombre: $pharFile\n";
           echo "Tamaño: " . round(filesize($pharFile) / (1024*1024), 2) . " MB\n";
           ?>
           EOL
+          
+          # Ejecutar con phar.readonly desactivado
+          php -d phar.readonly=0 build-phar.php
 
-      - name: Build PHAR
-        run: php build-phar.php
-
-      - name: Upload PHAR as artifact
+      - name: Upload PHAR artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Submarine-PH AR
+          name: Submarine-PHAR
           path: Submarine.phar
-          if-no-files-found: error
           retention-days: 30
 
-      - name: Show info
-        run: |
-          ls -lh *.phar
-          echo "Workflow completado."
+      - name: Show file info
+        run: ls -lh *.phar
